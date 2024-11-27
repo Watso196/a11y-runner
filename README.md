@@ -1,6 +1,5 @@
-# Accessibility Testing Script
 
-TODO: Update this file to use markdown structure properly!
+# Accessibility Testing Script
 
 This project is a Node.js-based script designed to run accessibility tests on a list of URLs using [Pa11y](https://pa11y.org/) and Puppeteer. It supports authenticated tests, environment switching (production or development), and handles user-specific login flows.
 
@@ -11,7 +10,8 @@ This project is a Node.js-based script designed to run accessibility tests on a 
 - **Run Accessibility Tests**: Tests multiple URLs for WCAG compliance using Pa11y.
 - **Authenticated Testing**: Supports login via user-specific URLs for pages requiring authentication.
 - **Environment Switching**: Dynamically switches between production and development environments.
-- **JSON Configuration**: URLs, login details, and environment settings are stored in a `urls.json` file.
+- **JSON Configuration**: URLs, page names, login details, and environment settings are stored in a `urls.json` file.
+
 
 ---
 
@@ -19,40 +19,35 @@ This project is a Node.js-based script designed to run accessibility tests on a 
 
 1. [Node.js](https://nodejs.org/) installed on your machine.
 2. Install project dependencies by running:
-   ```bash
+   ```
    npm install
-   ```
-3. Create a .env file in the root directory to store credentials:
-   ```
-   ACCOUNT1_USERNAME=your_username
-   ACCOUNT1_PASSWORD=your_password
-   ACCOUNT2_USERNAME=another_username
-   ACCOUNT2_PASSWORD=another_password
    ```
 
 ## Usage
 
-Add URLs to the urls.json file:
+Create a `urls.json` file with the list of URLs you want to test. Example:
 
 ```
 [
-{
-"url": "https://webstaurantstore.com/cart/",
-"requiresLogin": true,
-"credentials": "18994339",
-"environment": "dev"
-},
-{
-"url": "https://webstaurantstore.com/myaccount/orders/",
-"requiresLogin": true,
-"credentials": "18994340",
-"environment": "prod"
-},
-{
-"url": "https://webstaurantstore.com/",
-"requiresLogin": false,
-"environment": "prod"
-}
+   {
+      "pageName": "Home",
+      "url": "https://home.com",
+      "requiresLogin": false,
+      "environment": "prod"
+   },
+   {
+      "pageName": "User Account",
+      "url": "https://home.com/myaccount",
+      "requiresLogin": true,
+      "credentials": "18994340", // User ID for login URL
+      "environment": "dev"
+   },
+   {
+      "pageName": "About",
+      "url": "https://home.com/about",
+      "requiresLogin": false,
+      "environment": "prod"
+   }
 ]
 ```
 
@@ -66,15 +61,12 @@ node accessibility-tests.js
 
 ## View the results:
 
-Results are saved in `accessibility-results.json` in the root directory.
 
-```
-├── accessibility-test.js # Main script for running accessibility tests
-├── urls.json # Configuration file for URLs and settings
-├── .env # Environment variables (credentials)
-├── package.json # Project dependencies and metadata
-└── accessibility-results.json # Generated file with test results
-```
+Results are saved in `accessibility-results.json`, and the `test-results.html` file will display the data from this JSON file as a web page with page names, URLs, and test results.
+
+It's recommended you use the VS Code Live Server extension to view the `test-results.html` page, as CORS policies may prevent users from loading the required `results.js` script for the page. Using Live Server will bypass any CORS issues you may have.
+
+If you'd like to customize the data that shows up the in HTML page report, you can update the `results.js` file to do so.
 
 ## Dependencies
 
@@ -90,6 +82,6 @@ npm install
 
 ## Customization
 
-- Modify Login Behavior: The script assumes user-specific login URLs (e.g., `?login_as_user=...`). Adjust the `getCookiesForUser` function in `accessibility-tests.js` if your login flow changes.
-- Change Environments: Use the environment field in `urls.json` to toggle between production (prod) and development (dev) environments.
-- Additional Headers: Add custom headers for specific tests by extending the `pa11yOptions` object in the script.
+- Modify Login Behavior: The script assumes user-specific login URLs (e.g., `?login_as_user=...`). Adjust the `if (requiresLogin)` conditional logic in `accessibility-tests.js` if your login flow changes.
+- Change Environments: Use the environment field in `urls.json` to toggle between production (prod) and development (dev) environments. For consistency, you should choose either dev or prod to test against.
+- Additional Headers: Add custom headers for specific tests by extending the `pa11yOptions` object in the script. Currently, we ignore several tests that do not produce meaningful reports, and bypass testing certain elements that improperly report failures.
