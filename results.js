@@ -1,5 +1,5 @@
 // Fetch JSON data
-fetch("accessibility-results.json")
+fetch("axe-results.json")
   .then((response) => response.json())
   .then((data) => {
     console.log(data); // Check the loaded data in the console
@@ -10,6 +10,7 @@ fetch("accessibility-results.json")
 function displayResults(data) {
   const resultsContainer = document.getElementById("results");
 
+  // Iterate over each page's results
   data.forEach((page) => {
     const pageContainer = document.createElement("div");
     pageContainer.classList.add("page-container");
@@ -21,7 +22,9 @@ function displayResults(data) {
 
     // Issue Summary
     const issueSummary = document.createElement("p");
-    issueSummary.innerHTML = `Total issues: ${page.result.issues.length}`;
+    const totalIssues =
+      page.axeResults.violations.length + page.axeResults.incomplete.length;
+    issueSummary.innerHTML = `Total issues: ${totalIssues} (Violations: ${page.axeResults.violations.length}, Incomplete: ${page.axeResults.incomplete.length})`;
     pageContainer.appendChild(issueSummary);
 
     // Expand/Collapse Button
@@ -32,20 +35,23 @@ function displayResults(data) {
     // Container for Issues
     const issuesContainer = document.createElement("div");
     issuesContainer.classList.add("issues-container");
-    page.result.issues.forEach((issue) => {
-      const issueDiv = document.createElement("div");
-      issueDiv.classList.add("issue");
-      issueDiv.innerHTML = `
-        <strong>${issue.type}</strong> - ${issue.message}<br>
-        <em>Code: ${issue.code}</em><br>
-        <pre>${escapeHtml(issue.context)}</pre>
-      `;
-      issuesContainer.appendChild(issueDiv);
-    });
+
+    // Create sections for Violations and Incomplete issues
+    createIssuesSection(
+      issuesContainer,
+      "Violations",
+      page.axeResults.violations
+    );
+    createIssuesSection(
+      issuesContainer,
+      "Incomplete",
+      page.axeResults.incomplete
+    );
+
+    pageContainer.appendChild(issuesContainer);
 
     // Initially hide issues
     issuesContainer.style.display = "none";
-    pageContainer.appendChild(issuesContainer);
 
     // Add toggle functionality for expand/collapse
     toggleButton.addEventListener("click", () => {
@@ -61,6 +67,35 @@ function displayResults(data) {
     // Append the page container to the main results container
     resultsContainer.appendChild(pageContainer);
   });
+}
+
+// Function to create issues section (Violations or Incomplete)
+function createIssuesSection(container, sectionName, issues) {
+  if (issues.length > 0) {
+    const section = document.createElement("div");
+    section.classList.add("issues-section");
+
+    const sectionHeader = document.createElement("h3");
+    sectionHeader.textContent = `${sectionName} (${issues.length})`;
+    section.appendChild(sectionHeader);
+
+    issues.forEach((issue) => {
+      const issueDiv = document.createElement("div");
+      issueDiv.classList.add("issue");
+
+      issueDiv.innerHTML = `
+        <strong>${issue.id}</strong> - ${issue.message}<br>
+        <em>Severity: ${issue.impact}</em><br>
+        <em>Help: <a href="${
+          issue.helpUrl
+        }" target="_blank">Learn More</a></em><br>
+        <pre>${escapeHtml(issue.nodeHtml)}</pre>
+      `;
+      section.appendChild(issueDiv);
+    });
+
+    container.appendChild(section);
+  }
 }
 
 // Helper function to escape HTML

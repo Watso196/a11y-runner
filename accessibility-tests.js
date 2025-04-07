@@ -1,10 +1,14 @@
-const pa11y = require("pa11y");
 const puppeteer = require("puppeteer");
 const fs = require("fs").promises;
 require("dotenv").config();
 
 // Load URLs to test
 const urls = require("./urls.json");
+
+// Max number of concurrent tests
+const MAX_CONCURRENT_TESTS = 2;
+const queue = [];
+let runningTests = 0;
 
 // Helper to switch environments (e.g., prod or dev)
 function adjustEnvironment(url, environment) {
@@ -17,17 +21,77 @@ function adjustEnvironment(url, environment) {
   return url;
 }
 
+// Function to safely navigate to a URL with a timeout, avoiding puppeteers internal overloads
+async function safeGoto(page, url, timeout = 100000) {
+  return await Promise.race([
+    (async () => {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout });
+
+      // Example: wait for document to be fully ready
+      await page.waitForFunction(() => document.readyState === "complete", {
+        timeout: 10000,
+      });
+
+      return true;
+    })(),
+
+    // Manual timeout fallback
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Manual timeout hit")), timeout + 10000)
+    ),
+  ]);
+}
+
 // Function to retrieve cookies via a login URL
 async function getCookiesForUser(loginUrl) {
   console.log(`Logging in via ${loginUrl}...`);
-  const browser = await puppeteer.launch({ headless: true });
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
   const page = await browser.newPage();
 
+  const shouldIgnore = (url) =>
+    url.includes("google-analytics") ||
+    url.includes("doubleclick") ||
+    url.includes("facebookConversion") ||
+    url.includes("pinterestConversion") ||
+    url.includes("stash.dev.webstaurantstore.com");
+
+  page.on("response", async (response) => {
+    const url = response.url();
+    const status = response.status();
+    if (status >= 400 && !shouldIgnore(url)) {
+      const body = await response.text();
+      console.error(`[ERROR RESPONSE] ${status} from ${url}\nBody:\n${body}\n`);
+    }
+  });
+
+  page.on("requestfailed", (request) => {
+    const url = request.url();
+    if (!shouldIgnore(url)) {
+      console.error(
+        `[REQUEST FAILED] ${request.failure()?.errorText} at ${url}`
+      );
+    }
+  });
+
+  page.on("console", (msg) => {
+    for (let i = 0; i < msg.args().length; ++i)
+      console.log(`[BROWSER LOG] ${i}: ${msg.args()[i]}`);
+  });
+
   // Navigate to the user-specific login URL
-  await page.goto(loginUrl);
+  await safeGoto(page, loginUrl, 100000);
+  await page
+    .waitForNavigation({ waitUntil: "networkidle0", timeout: 10000 })
+    .catch(() => {});
 
   // Wait for navigation to ensure login is complete
-  await page.waitForNavigation();
+  await page.waitForNavigation({
+    timeout: 100000,
+    waitUntil: "networkidle2",
+  });
 
   // Retrieve cookies
   const cookies = await page.cookies();
@@ -37,100 +101,127 @@ async function getCookiesForUser(loginUrl) {
   return cookies;
 }
 
-// Function to run Pa11y tests
-async function runAccessibilityTests() {
-  console.log("Running accessibility tests...");
-  const results = [];
+// Function to run Axe tests on a given URL
+async function runAxeTests(url) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+  const page = await browser.newPage();
 
-  // Ensure Puppeteer browser instance is initialized
-  const browser = await puppeteer.launch();
+  await safeGoto(page, url, 100000);
 
-  for (const [index, item] of urls.entries()) {
-    const { pageName, url, requiresLogin, credentials, environment } = item;
-    const adjustedUrl = adjustEnvironment(url, environment);
+  // Inject axe-core into the page
+  await page.addScriptTag({ path: require.resolve("axe-core") });
+
+  // Run axe inside the page context
+  const results = await page.evaluate(async () => {
+    return await window.axe.run({
+      runOnly: {
+        type: "tag",
+        values: ["wcag2.2"], // Only include WCAG 2.2 rules
+      },
+      resultTypes: ["violations", "incomplete"], // Include violations and incomplete results
+    });
+  });
+
+  await browser.close();
+  return results;
+}
+
+// Function to manage the queue and run tests concurrently
+async function runTestInQueue() {
+  if (queue.length > 0 && runningTests < MAX_CONCURRENT_TESTS) {
+    const {
+      url,
+      adjustedUrl,
+      requiresLogin,
+      credentials,
+      environment,
+      resolve,
+      reject,
+    } = queue.shift();
+
+    runningTests++;
     console.log(`Testing ${adjustedUrl}...`);
-
     try {
-      let pa11yOptions = {
-        ignore: [
-          "WCAG2AA.Principle4.Guideline4_1.4_1_1.F77",
-          "WCAG2AA.Principle2.Guideline2_4.2_4_1.G1,G123,G124.NoSuchID",
-          "WCAG2AA.Principle1.Guideline1_1.1_1_1.H30.2",
-        ],
-        browser,
-      };
-
-      // Delay to ensure stability before the first test
-      if (index === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-
-      // Handle login if required
       if (requiresLogin) {
         const loginUrl = adjustEnvironment(
           `https://webstaurantstore.com/myaccount/?login_as_user=${credentials}`,
           environment
         );
-
-        const page = await browser.newPage();
-
-        console.log(`Logging in at ${loginUrl}...`);
-        await page.goto(loginUrl, {
-          waitUntil: "networkidle2",
-          timeout: 80000,
-        });
-
-        const cookies = await page.cookies();
-        const loginCookie = cookies.find(
-          (cookie) => cookie.name === "LOGGED_IN_AS_USER"
-        );
-
-        if (!loginCookie || loginCookie.value !== "true") {
-          throw new Error(
-            "Login failed: LOGGED_IN_AS_USER cookie not found or not true."
-          );
-        }
-
-        console.log("Login successful!");
-        pa11yOptions.headers = cookies.reduce((headers, cookie) => {
+        const cookies = await getCookiesForUser(loginUrl);
+        // Add cookies to request headers if needed
+        const cookieHeader = cookies.reduce((headers, cookie) => {
           headers[cookie.name] = cookie.value;
           return headers;
         }, {});
-
-        await page.close();
       }
 
-      const page = await browser.newPage();
-      console.log(`Opening page ${adjustedUrl}...`);
-      await page.goto(adjustedUrl, {
-        waitUntil: "networkidle2",
-        timeout: 80000,
-      });
+      // Run the axe-core accessibility test
+      const axeResults = await runAxeTests(adjustedUrl);
 
-      // Run Pa11y test
-      console.log(`Running tests for ${adjustedUrl}...`);
-      const result = await pa11y(adjustedUrl, {
-        ...pa11yOptions,
-        hideElements:
-          'a[href="/plus/"] span, span.ribbon__text-plus--cart span',
-      });
-
-      // Include the page name in the result
-      results.push({
-        pageName,
+      // Resolve the promise with the test results
+      resolve({
+        pageName: url.pageName,
         url,
         environment,
-        result,
+        axeResults,
       });
 
       console.log(`Test completed for ${adjustedUrl}.`);
     } catch (error) {
       console.error(`Error testing ${adjustedUrl}:`, error.message);
+      reject(error);
+    } finally {
+      runningTests--;
+      startNextTest(); // Start the next test
     }
   }
+}
+
+// Function to add pages to the queue
+function addTestToQueue(urlObject) {
+  return new Promise((resolve, reject) => {
+    const adjustedUrl = adjustEnvironment(urlObject.url, urlObject.environment);
+    queue.push({
+      url: urlObject,
+      adjustedUrl,
+      requiresLogin: urlObject.requiresLogin,
+      credentials: urlObject.credentials,
+      environment: urlObject.environment,
+      resolve,
+      reject,
+    });
+    startNextTest(); // Ensure the next test starts if possible
+  });
+}
+
+// Function to start the next test in the queue
+function startNextTest() {
+  if (queue.length > 0 && runningTests < MAX_CONCURRENT_TESTS) {
+    runTestInQueue(); // Start running tests concurrently
+  }
+}
+
+// Function to run accessibility tests
+async function runAccessibilityTests() {
+  console.log("Running accessibility tests...");
+  const results = [];
+
+  // Iterate through each URL and add to the queue
+  const testPromises = urls.map((urlObject) =>
+    addTestToQueue(urlObject)
+      .then((result) => {
+        results.push(result);
+      })
+      .catch((error) => console.error(`Test error: ${error.message}`))
+  );
+
+  // Wait for all tests to finish
+  await Promise.all(testPromises);
 
   console.log("Accessibility tests completed.");
-  await browser.close();
   return results;
 }
 
@@ -140,11 +231,8 @@ async function main() {
     const results = await runAccessibilityTests();
 
     // Save results to a JSON file
-    await fs.writeFile(
-      "accessibility-results.json",
-      JSON.stringify(results, null, 2)
-    );
-    console.log("Results saved to accessibility-results.json");
+    await fs.writeFile("axe-results.json", JSON.stringify(results, null, 2));
+    console.log("Results saved to axe-results.json");
   } catch (error) {
     console.error("An error occurred:", error.message);
   }
