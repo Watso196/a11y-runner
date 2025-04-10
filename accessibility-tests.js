@@ -45,10 +45,6 @@ async function safeGoto(page, url, timeout = 100000) {
 // Function to retrieve cookies via a login URL
 async function getCookiesForUser(loginUrl) {
   console.log(`Logging in via ${loginUrl}...`);
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
   const page = await browser.newPage();
 
   const shouldIgnore = (url) =>
@@ -95,37 +91,45 @@ async function getCookiesForUser(loginUrl) {
 
   // Retrieve cookies
   const cookies = await page.cookies();
-  await browser.close();
 
   console.log("Login successful, cookies retrieved.");
   return cookies;
 }
 
 // Function to run Axe tests on a given URL
-async function runAxeTests(url) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+async function runAxeTests(url, browser, cookie) {
   const page = await browser.newPage();
 
-  await safeGoto(page, url, 100000);
+  await page.goto(url, { waitUntil: "domcontentloaded" });
+  if (cookie) {
+    await page.setCookie({ SESSION_ID: cookie });
+  }
 
   // Inject axe-core into the page
   await page.addScriptTag({ path: require.resolve("axe-core") });
 
   // Run axe inside the page context
   const results = await page.evaluate(async () => {
-    return await window.axe.run({
+    console.log(window.axe);
+    const results = await window.axe.run({
       runOnly: {
         type: "tag",
-        values: ["wcag2.2"], // Only include WCAG 2.2 rules
+        values: [
+          "wcag2a",
+          "wcag2aa",
+          "wcag21a",
+          "wcag21aa",
+          "wcag22a",
+          "wcag22aa",
+        ], // Only include WCAG 2.2 rules
       },
       resultTypes: ["violations", "incomplete"], // Include violations and incomplete results
     });
+    console.log(results);
+    return results;
   });
 
-  await browser.close();
+  await page.close();
   return results;
 }
 
@@ -210,6 +214,7 @@ async function runAccessibilityTests() {
   const results = [];
 
   // Iterate through each URL and add to the queue
+
   const testPromises = urls.map((urlObject) =>
     addTestToQueue(urlObject)
       .then((result) => {
@@ -228,7 +233,40 @@ async function runAccessibilityTests() {
 // Main function to coordinate tasks
 async function main() {
   try {
-    const results = await runAccessibilityTests();
+    const browser = await puppeteer.launch({
+      headless: false,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
+    console.log(urls.length);
+    const results = [];
+    for (const url of urls) {
+      const env =
+        url.environment === "dev"
+          ? "https://www.dev.webstaurantstore.com"
+          : "https://www.webstaurantstore.com";
+      let cookies;
+      if (url.credentials) {
+        const href = new URL("/myaccount", env);
+        href.searchParams.append("login_as_user", url.credentials);
+        const page = await browser.newPage();
+        console.log(href.href);
+        await page.goto(href.href);
+        await page.waitForNetworkIdle();
+        const cookies = await page.cookies();
+        const sessionId = cookies.find(
+          (cookie) => cookie.name === "SESSION_ID"
+        );
+        if (sessionId) {
+          cookie = sessionId;
+        }
+        await page.close();
+      }
+      const href = new URL(url.url, env);
+      console.log(href.href);
+      const axeResults = await runAxeTests(href, browser, cookies);
+      results.push(axeResults);
+    }
+    await browser.close();
 
     // Save results to a JSON file
     await fs.writeFile("axe-results.json", JSON.stringify(results, null, 2));
