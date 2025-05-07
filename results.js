@@ -2,7 +2,7 @@
 fetch("axe-results.json")
   .then((response) => response.json())
   .then((data) => {
-    console.log(data); // Check the loaded data in the console
+    console.log(data); // Confirm structure
     displayResults(data);
   })
   .catch((error) => console.error("Error loading the data:", error));
@@ -10,66 +10,51 @@ fetch("axe-results.json")
 function displayResults(data) {
   const resultsContainer = document.getElementById("results");
 
-  // Iterate over each page's results
-  data.forEach((page) => {
+  data.forEach((page, index) => {
     const pageContainer = document.createElement("div");
-    pageContainer.classList.add("page-container");
+    pageContainer.classList.add("page-result");
 
     // Page Title and URL
     const pageHeader = document.createElement("h2");
-    pageHeader.textContent = `${page.pageName} - ${page.url}`;
+    const pageLabel = page.url || `Page ${index + 1}`;
+    pageHeader.textContent = pageLabel;
     pageContainer.appendChild(pageHeader);
+
+    // Filter out incomplete results
+    const filteredViolations = (page.violations || []).filter((violation) => {
+      return (violation.nodes || []).length > 0;
+    });
 
     // Issue Summary
     const issueSummary = document.createElement("p");
-    const totalIssues =
-      page.axeResults.violations.length + page.axeResults.incomplete.length;
-    issueSummary.innerHTML = `Total issues: ${totalIssues} (Violations: ${page.axeResults.violations.length}, Incomplete: ${page.axeResults.incomplete.length})`;
+    issueSummary.innerHTML = `Total issues: ${filteredViolations.length}`;
     pageContainer.appendChild(issueSummary);
 
     // Expand/Collapse Button
     const toggleButton = document.createElement("button");
-    toggleButton.textContent = "Show/Hide Issues";
+    toggleButton.classList.add("toggle-btn");
+    toggleButton.textContent = "Show Issues";
     pageContainer.appendChild(toggleButton);
 
     // Container for Issues
     const issuesContainer = document.createElement("div");
-    issuesContainer.classList.add("issues-container");
+    issuesContainer.classList.add("expandable");
 
-    // Create sections for Violations and Incomplete issues
-    createIssuesSection(
-      issuesContainer,
-      "Violations",
-      page.axeResults.violations
-    );
-    createIssuesSection(
-      issuesContainer,
-      "Incomplete",
-      page.axeResults.incomplete
-    );
-
+    // Create only Violations section
+    createIssuesSection(issuesContainer, "Violations", filteredViolations);
     pageContainer.appendChild(issuesContainer);
 
-    // Initially hide issues
-    issuesContainer.style.display = "none";
-
-    // Add toggle functionality for expand/collapse
+    // Toggle behavior
     toggleButton.addEventListener("click", () => {
-      if (issuesContainer.style.display === "none") {
-        issuesContainer.style.display = "block";
-        toggleButton.textContent = "Hide Issues";
-      } else {
-        issuesContainer.style.display = "none";
-        toggleButton.textContent = "Show Issues";
-      }
+      const isVisible = issuesContainer.classList.contains("open");
+      issuesContainer.classList.toggle("open", !isVisible);
+      toggleButton.textContent = isVisible ? "Show Issues" : "Hide Issues";
     });
 
-    // Append the page container to the main results container
     resultsContainer.appendChild(pageContainer);
   });
 }
 
-// Function to create issues section (Violations or Incomplete)
 function createIssuesSection(container, sectionName, issues) {
   if (issues.length > 0) {
     const section = document.createElement("div");
@@ -81,15 +66,20 @@ function createIssuesSection(container, sectionName, issues) {
 
     issues.forEach((issue) => {
       const issueDiv = document.createElement("div");
-      issueDiv.classList.add("issue");
+      issueDiv.classList.add("violation");
+
+      const nodeHtml = issue.nodes?.[0]?.html || "";
 
       issueDiv.innerHTML = `
-        <strong>${issue.id}</strong> - ${issue.message}<br>
-        <em>Severity: ${issue.impact}</em><br>
-        <em>Help: <a href="${
-          issue.helpUrl
-        }" target="_blank">Learn More</a></em><br>
-        <pre>${escapeHtml(issue.nodeHtml)}</pre>
+        <div class="violation-title">${issue.id}</div>
+        <div class="violation-details">
+          ${issue.description || "No description"}<br>
+          <strong>Severity:</strong> ${issue.impact || "N/A"}<br>
+          <strong>Help:</strong> <a href="${
+            issue.helpUrl
+          }" target="_blank">Learn More</a><br>
+          <pre>${escapeHtml(nodeHtml)}</pre>
+        </div>
       `;
       section.appendChild(issueDiv);
     });
@@ -100,14 +90,5 @@ function createIssuesSection(container, sectionName, issues) {
 
 // Helper function to escape HTML
 function escapeHtml(str) {
-  return str.replace(/[&<>"']/g, function (match) {
-    const map = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#039;",
-    };
-    return map[match];
-  });
+  return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
